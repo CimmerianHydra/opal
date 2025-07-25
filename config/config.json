@@ -1,5 +1,5 @@
 {
-  "PrismMainPath": "~/.var/app/org.prismlauncher.../",
-  "PrismInstPath": "C:/Users/Gideon/AppData/Local/Programs/PrismLauncher/instances",
-  "SteamShortcutsPath": "~/.local/share/Steam/userdata/shortcuts.vdf"
+  "PrismMainPath": "C:/Users/Gideon/AppData/Local/Programs/PrismLauncher",
+  "PrismInstPath": "C:/Users/nikni/Tools/PrismLauncher/PrismLauncher-Windows-MSVC-Portable-8.0/instances",
+  "SteamShortcutsPath": "C:/Users/Gideon/AppData/Local/Steam/userdata/shortcuts.vdf"
 }
