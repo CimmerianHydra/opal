@@ -6,24 +6,26 @@ use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::collections::BTreeMap;
+use std::time::Duration;
 use eframe::egui::{self, ColorImage, IconData, Vec2};
 
 use steam_shortcuts_util::{
   parse_shortcuts,
   shortcuts_to_bytes,
   shortcut::{Shortcut, ShortcutOwned},
-  app_id_generator::calculate_app_id,
   app_id_generator::calculate_app_id_for_shortcut
 };
 
 use steamlocate::SteamDir;
 use log::{warn, info};
 
-use crate::steam_start_stop::{ensure_steam_stopped};
+use crate::steam_start_stop::{ensure_steam_started, ensure_steam_stopped, start_steam};
 
 const APP_NAME : &str = "Opal";
 const DOT_MINECRAFT_FOLDER_NAME : &str = ".minecraft"; // Used to check whether a given folder really is a modpack, for old modpacks.
 const MINECRAFT_FOLDER_NAME : &str = "minecraft"; // Used to check whether a given folder really is a modpack, for newer modpacks.
+const APP_INSTANCE_GRID_COLS : usize = 3;
+const APP_INSTANCE_GRID_MAX_HEIGHT : f32 = 200.0;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -86,10 +88,6 @@ impl DesiredShortcut {
       owned
   }
 }
-/// Helper: build a `ShortcutOwned` using the crate's `Shortcut::new(..).to_owned()`.
-
-
-
 
 #[derive(Default)]
 struct Opal {
@@ -113,10 +111,6 @@ impl Opal {
   fn update_steam_shortcuts(&mut self) {
 
     // Make sure the content exists and can be successfully read. If not, print out error.
-    let Ok(content) = std::fs::read(&self.config.steam_shortcuts_path)
-    else { self.log_printout = String::from("ERROR: couldn't read steam shortcuts content."); return };
-
-    // Make sure the content exists and can be successfully read. If not, print out error.
     // Immediately break lifetimes with `to_owned`.
     let mut existing_owned: Vec<ShortcutOwned> = if self.config.steam_shortcuts_path.exists() {
         let bytes = fs::read(&self.config.steam_shortcuts_path).unwrap_or_default();
@@ -134,32 +128,31 @@ impl Opal {
 
     // Build desired shortcuts as owned and upsert by app_id.
     // We also re-number "order" later, so the `order` we put here is temporary.
-    let mut tmp_owned: Vec<ShortcutOwned> = Vec::new();
-
-    let mut exe_path = self.config.prism_main_path.clone();
-    exe_path.push(r"\prismlauncher.exe");
-    let exe_path_string = exe_path.to_string_lossy().to_string();
+    let exe_path_string = self.config.prism_main_path.to_string_lossy().to_string() + "\\prismlauncher.exe";
+    let start_dir_string = self.config.prism_main_path.to_string_lossy().to_string();
 
     for (i, inst) in self.instance_vector.iter().enumerate() {
-        let app_name = inst.folder_name.clone();
-        let launch_options = format!("-l \"{}\"", app_name);
+        if inst.checked {
+          let app_name = inst.folder_name.clone();
+          let launch_options = format!("-l \"{}\"", app_name);
 
-        let d = DesiredShortcut {
-          // These are the arguments that go into Shortcut::new() as well
-          app_name : app_name.clone(),
-          exe : exe_path_string.clone(),
-          shortcut_path : String::new(),
-          start_dir : self.config.prism_main_path.to_string_lossy().to_string(),
-          launch_options : launch_options,
+          let d = DesiredShortcut {
+            // These are the arguments that go into Shortcut::new() as well
+            app_name : app_name.clone(),
+            exe : exe_path_string.clone(),
+            shortcut_path : String::new(),
+            start_dir : start_dir_string.clone(),
+            launch_options : launch_options,
 
-          // TODO
-          icon : String::new(),
-          tags : vec![],
-        };
+            // TODO
+            icon : String::new(),
+            tags : vec![],
+          };
 
-        let sc = d.make_owned(i);
-        // If you prefer "app name + exe" as the identity instead of app_id, change this keying.
-        by_id.insert(sc.app_id, sc);
+          let sc = d.make_owned(i);
+          // If you prefer "app name + exe" as the identity instead of app_id, change this keying.
+          by_id.insert(sc.app_id, sc);
+        }
     }
 
     // Rebuild a stable, ordered list and fix the `order` field.
@@ -181,58 +174,110 @@ impl Opal {
 }
 impl eframe::App for Opal {
   fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    ctx.set_pixels_per_point(1.2);
-    egui::CentralPanel::default().show(ctx, |ui| {
-      ui.heading("Export PrismLauncher to Steam");
+        ctx.set_pixels_per_point(1.2);
 
-      ui.horizontal(|ui| {
-        let name_label = ui.label("PrismLauncher Executable Path:");
-        ui.text_edit_singleline(&mut self.config.prism_main_path.to_string_lossy())
-          .labelled_by(name_label.id);
-        if ui.button("📂").clicked() {
-          if let Some(folder) = pick_folder() {
-              self.config.prism_main_path = folder;
-          }
-        }
-      });
+        // --- Fixed footer: always visible at the bottom ---
+        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
 
-      ui.horizontal(|ui| {
-        let name_label = ui.label("PrismLauncher Instances Path:");
-        ui.text_edit_singleline(&mut self.config.prism_inst_path.to_string_lossy())
-          .labelled_by(name_label.id);
-        if ui.button("📂").clicked() {
-          if let Some(folder) = pick_folder() {
-              self.config.prism_inst_path = folder;
-              self.update_instance_vector();
-          }
-        }
-        if ui.button("🔄").clicked() {
-          self.update_instance_vector();
-        };
-      });
+            // If you want the export button to always be visible too, keep it here:
+            if ui.button("Export Selected to Steam Shortcuts").clicked() {
+              if let Err(e) = ensure_steam_stopped(Duration::from_millis(500)) {
+                self.log_printout.push_str(&format!("\nFailed to close Steam: {e}"));
+              }
 
-      ui.separator();
-      
-      ui.heading("Instances Found:");
-      
-      if self.instance_vector.is_empty() {
-        ui.label(format!("No PrismLauncher instance found in {}.", self.config.prism_inst_path.to_string_lossy()));
-      } else {
-        for inst in &mut self.instance_vector {
-          ui.checkbox(&mut inst.checked, &inst.folder_name);
-        }
-      }
+              self.update_steam_shortcuts();
+              
+              if let Err(e) = start_steam() {
+                self.log_printout.push_str(&format!("\nFailed to start Steam: {e}"));
+              }
+              if let Err(e) = ensure_steam_started(Duration::from_millis(500)) {
+                self.log_printout.push_str(&format!("\nFailed to check if Steam started: {e}"));
+              }
 
-      if ui.button("Export Selected to Steam Shortcuts").clicked() {
-          ensure_steam_stopped();
-          self.update_steam_shortcuts();
-        };
-      
-      ui.separator();
-      
-      ui.label(&self.log_printout);
-    });
-  }
+            }
+
+            ui.separator();
+
+            // Scrollable log that sticks to the bottom as new lines arrive
+            egui::ScrollArea::vertical()
+                .id_salt("log_scroll")
+                .max_height(86.0)
+                .stick_to_bottom(true)
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    ui.monospace(&self.log_printout);
+                });
+        });
+
+        // --- Main content goes here and will never cover the footer ---
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("Export PrismLauncher to Steam");
+
+            ui.horizontal(|ui| {
+                let name_label = ui.label("PrismLauncher Executable Path:");
+                ui.text_edit_singleline(&mut self.config.prism_main_path.to_string_lossy())
+                    .labelled_by(name_label.id);
+                if ui.button("📂").clicked() {
+                    if let Some(folder) = pick_folder() {
+                        self.config.prism_main_path = folder;
+                    }
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let name_label = ui.label("PrismLauncher Instances Path:");
+                ui.text_edit_singleline(&mut self.config.prism_inst_path.to_string_lossy())
+                    .labelled_by(name_label.id);
+                if ui.button("📂").clicked() {
+                    if let Some(folder) = pick_folder() {
+                        self.config.prism_inst_path = folder;
+                        self.update_instance_vector();
+                    }
+                }
+                if ui.button("🔄").clicked() {
+                    self.update_instance_vector();
+                };
+            });
+
+            ui.separator();
+            ui.heading("Instances Found:");
+
+            egui::ScrollArea::vertical()
+                .id_salt("instances_scroll_grid")
+                .max_height(APP_INSTANCE_GRID_MAX_HEIGHT) // or: .max_height(ui.available_height())
+                .auto_shrink([false; 2])
+                .show(ui, |ui| {
+                    if self.instance_vector.is_empty() {
+                        ui.label(format!(
+                            "No PrismLauncher instance found in {}.",
+                            self.config.prism_inst_path.display()
+                        ));
+                        return;
+                    }
+
+                    egui::Grid::new("instances_grid")
+                        .num_columns(APP_INSTANCE_GRID_COLS)
+                        .spacing([12.0, 8.0])
+                        .striped(false)
+                        .show(ui, |ui| {
+                            for row in self.instance_vector.chunks_mut(APP_INSTANCE_GRID_COLS) {
+                                for inst in row {
+                                    ui.checkbox(&mut inst.checked, &inst.folder_name);
+                                }
+                                // optional: pad short last rows
+                                // for _ in row.len()..APP_INSTANCE_GRID_COLS { ui.allocate_space(egui::vec2(0.0, 0.0)); }
+                                ui.end_row();
+                            }
+                        });
+                });
+
+            // If you chose to keep the export button in the footer, remove this:
+            // if ui.button("Export Selected to Steam Shortcuts").clicked() {
+            //     ensure_steam_stopped();
+            //     self.update_steam_shortcuts();
+            // };
+        });
+    }
 }
 
 pub fn pick_folder() -> Option<PathBuf> {
@@ -293,7 +338,7 @@ fn main() -> eframe::Result {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
   let options = eframe::NativeOptions {
       viewport: egui::ViewportBuilder {
-        inner_size : Some(Vec2::new(1280.0, 720.0)),
+        inner_size : Some(Vec2::new(640.0, 360.0)),
         icon : Some(load_icon().into()),
         ..Default::default()
       },
