@@ -5,24 +5,33 @@ use std::fs;
 use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use eframe::egui::{self, ColorImage};
-use steam_shortcuts_util::{parse_shortcuts, shortcuts_to_bytes, Shortcut};
+use std::collections::BTreeMap;
+use eframe::egui::{self, ColorImage, IconData, Vec2};
+
+use steam_shortcuts_util::{
+  parse_shortcuts,
+  shortcuts_to_bytes,
+  shortcut::{Shortcut, ShortcutOwned},
+  app_id_generator::calculate_app_id,
+  app_id_generator::calculate_app_id_for_shortcut
+};
+
 use steamlocate::SteamDir;
+use log::{warn, info};
 
 use crate::steam_start_stop::{ensure_steam_stopped};
 
 const APP_NAME : &str = "Opal";
 const DOT_MINECRAFT_FOLDER_NAME : &str = ".minecraft"; // Used to check whether a given folder really is a modpack, for old modpacks.
 const MINECRAFT_FOLDER_NAME : &str = "minecraft"; // Used to check whether a given folder really is a modpack, for newer modpacks.
-const ICON_PATH : &str = "resources\\icon.png";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Config {
-  prism_main_path: String,
-  prism_inst_path: String,
-  steam_shortcuts_path: String,
+  prism_main_path: PathBuf,
+  prism_inst_path: PathBuf,
+  steam_shortcuts_path: PathBuf,
 }
 
 #[derive(Debug)]
@@ -31,6 +40,56 @@ struct Instance {
   folder_path : String,
   checked : bool,
 }
+
+/// Your app's "desired shortcut" input. Adapt as needed.
+#[derive(Debug, Clone)]
+pub struct DesiredShortcut {
+    pub app_name: String,
+    pub exe: String,
+    pub start_dir: String,
+    pub icon: String,
+    pub launch_options: String,
+    pub tags: Vec<String>,
+    // Optional: populate if you use Steam's "Shortcut Path" field
+    pub shortcut_path: String,
+}
+impl DesiredShortcut {
+  fn make_owned(&self, order: usize) -> ShortcutOwned {
+      // Build with borrowed &strs just for this call, immediately convert to owned.
+      let order_string = order.to_string();
+      let tmp: Shortcut = Shortcut::new(
+          &order_string,         // order is a string in VDF
+          &self.app_name,
+          &self.exe,
+          &self.start_dir,
+          &self.icon,
+          &self.shortcut_path,
+          &self.launch_options,
+      );
+
+      let mut owned = tmp.to_owned();
+      // Tags are owned strings on `ShortcutOwned`
+      owned.tags = self.tags.clone();
+
+      // Compute app_id using the borrowed view of our owned struct
+      owned.app_id = calculate_app_id_for_shortcut(&owned.borrow());
+
+      // Sensible defaults (match crate’s intent)
+      owned.is_hidden = false;
+      owned.allow_desktop_config = true;
+      owned.allow_overlay = true;
+      owned.open_vr = 0;
+      owned.dev_kit = 0;
+      owned.dev_kit_overrite_app_id = 0;
+      owned.last_play_time = 0;
+
+      owned
+  }
+}
+/// Helper: build a `ShortcutOwned` using the crate's `Shortcut::new(..).to_owned()`.
+
+
+
 
 #[derive(Default)]
 struct Opal {
@@ -41,11 +100,7 @@ struct Opal {
 impl Opal {
   fn new(config : &Config) -> Self {
     Self {
-      config : Config {
-            prism_main_path: config.prism_main_path.clone(),
-            prism_inst_path: config.prism_inst_path.clone(),
-            steam_shortcuts_path: config.steam_shortcuts_path.clone(),
-          },
+      config :config.clone(),
       instance_vector : get_instances_from_path(&config.prism_inst_path),
       log_printout : format!("Welcome to {} ver. {}", APP_NAME, env!("CARGO_PKG_VERSION")),
     }
@@ -56,33 +111,71 @@ impl Opal {
   }
 
   fn update_steam_shortcuts(&mut self) {
-    let content = std::fs::read(&self.config.steam_shortcuts_path).expect("Steam path could not be loaded.");
-    let shortcuts = parse_shortcuts(content.as_slice()).expect("Steam shortcuts file not found or unreadable.");
-    let mut new_shortcuts = shortcuts.clone();
-    let first_available_order = shortcuts.len().to_string();
 
-    let mut _exe_path = self.config.prism_main_path.clone();
-    _exe_path.push_str("\\prismlauncher.exe");
-    let exe_path = _exe_path;
+    // Make sure the content exists and can be successfully read. If not, print out error.
+    let Ok(content) = std::fs::read(&self.config.steam_shortcuts_path)
+    else { self.log_printout = String::from("ERROR: couldn't read steam shortcuts content."); return };
 
-    for i in &self.instance_vector {
-      if i.checked {
-        let first_available_order = first_available_order.clone();
-        let app_name = i.folder_name.clone();
-        let launch_options = format!("-l \"{}\"", app_name.as_str());
-        let shortcut_from_instance = Shortcut::new(Box::leak(first_available_order.into_boxed_str()),
-                                                                Box::leak(app_name.into_boxed_str()),
-                                                                exe_path.as_str(),
-                                                                &self.config.prism_main_path,
-                                                                "",
-                                                                "",
-                                                                Box::leak(launch_options.into_boxed_str()));
-        new_shortcuts.push(shortcut_from_instance);
-      }
+    // Make sure the content exists and can be successfully read. If not, print out error.
+    // Immediately break lifetimes with `to_owned`.
+    let mut existing_owned: Vec<ShortcutOwned> = if self.config.steam_shortcuts_path.exists() {
+        let bytes = fs::read(&self.config.steam_shortcuts_path).unwrap_or_default();
+        let parsed: Vec<Shortcut> = parse_shortcuts(bytes.as_slice())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("parse: {e}")))
+            .unwrap();
+        parsed.into_iter().map(|s| s.to_owned()).collect()
+    } else {
+        Vec::new()
+    };
+
+    // Index existing by app_id (stable identifier for Steam assets).
+    let mut by_id: BTreeMap<u32, ShortcutOwned> =
+        existing_owned.drain(..).map(|s| (s.app_id, s)).collect();
+
+    // Build desired shortcuts as owned and upsert by app_id.
+    // We also re-number "order" later, so the `order` we put here is temporary.
+    let mut tmp_owned: Vec<ShortcutOwned> = Vec::new();
+
+    let mut exe_path = self.config.prism_main_path.clone();
+    exe_path.push(r"\prismlauncher.exe");
+    let exe_path_string = exe_path.to_string_lossy().to_string();
+
+    for (i, inst) in self.instance_vector.iter().enumerate() {
+        let app_name = inst.folder_name.clone();
+        let launch_options = format!("-l \"{}\"", app_name);
+
+        let d = DesiredShortcut {
+          // These are the arguments that go into Shortcut::new() as well
+          app_name : app_name.clone(),
+          exe : exe_path_string.clone(),
+          shortcut_path : String::new(),
+          start_dir : self.config.prism_main_path.to_string_lossy().to_string(),
+          launch_options : launch_options,
+
+          // TODO
+          icon : String::new(),
+          tags : vec![],
+        };
+
+        let sc = d.make_owned(i);
+        // If you prefer "app name + exe" as the identity instead of app_id, change this keying.
+        by_id.insert(sc.app_id, sc);
     }
 
-    let to_write = shortcuts_to_bytes(&new_shortcuts);
-    std::fs::write(&self.config.steam_shortcuts_path, to_write).expect("Steam path could not be loaded.");
+    // Rebuild a stable, ordered list and fix the `order` field.
+    let mut final_owned: Vec<ShortcutOwned> = by_id.into_values().collect();
+    final_owned.sort_by(|a, b| a.app_name.cmp(&b.app_name)); // or whatever ordering you like
+    for (i, s) in final_owned.iter_mut().enumerate() {
+        s.order = i.to_string();
+    }
+
+    // Borrow-on-demand to serialize.
+    // NOTE: `shortcuts_to_bytes` wants `Vec<Shortcut<'_>>`, so produce a borrowed view.
+    let borrowed: Vec<Shortcut> = final_owned.iter().map(|s| s.borrow()).collect();
+    let out = shortcuts_to_bytes(&borrowed);
+
+    // Write back to disk.
+    fs::write(&self.config.steam_shortcuts_path, out).expect("Couldn't write steam shortcuts to file.");
   }
 
 }
@@ -94,22 +187,22 @@ impl eframe::App for Opal {
 
       ui.horizontal(|ui| {
         let name_label = ui.label("PrismLauncher Executable Path:");
-        ui.text_edit_singleline(&mut self.config.prism_main_path)
+        ui.text_edit_singleline(&mut self.config.prism_main_path.to_string_lossy())
           .labelled_by(name_label.id);
         if ui.button("📂").clicked() {
           if let Some(folder) = pick_folder() {
-              self.config.prism_main_path = folder.to_string_lossy().to_string();
+              self.config.prism_main_path = folder;
           }
         }
       });
 
       ui.horizontal(|ui| {
         let name_label = ui.label("PrismLauncher Instances Path:");
-        ui.text_edit_singleline(&mut self.config.prism_inst_path)
+        ui.text_edit_singleline(&mut self.config.prism_inst_path.to_string_lossy())
           .labelled_by(name_label.id);
         if ui.button("📂").clicked() {
           if let Some(folder) = pick_folder() {
-              self.config.prism_inst_path = folder.to_string_lossy().to_string();
+              self.config.prism_inst_path = folder;
               self.update_instance_vector();
           }
         }
@@ -121,9 +214,9 @@ impl eframe::App for Opal {
       ui.separator();
       
       ui.heading("Instances Found:");
-
+      
       if self.instance_vector.is_empty() {
-        ui.label(format!("No PrismLauncher instance found in {}.", self.config.prism_inst_path));
+        ui.label(format!("No PrismLauncher instance found in {}.", self.config.prism_inst_path.to_string_lossy()));
       } else {
         for inst in &mut self.instance_vector {
           ui.checkbox(&mut inst.checked, &inst.folder_name);
@@ -152,7 +245,7 @@ fn contains_minecraft_folder(base_folder : &PathBuf) -> bool {
     dot_minecraft_path.is_dir() || minecraft_path.is_dir()
 }
 
-fn get_instances_from_path(path : &String) -> Vec<Instance> {
+fn get_instances_from_path(path : &PathBuf) -> Vec<Instance> {
   let mut folders = Vec::new();
   if let Ok(entries) = fs::read_dir(path) {
       for entry in entries.flatten() {
@@ -170,8 +263,25 @@ fn get_instances_from_path(path : &String) -> Vec<Instance> {
         }
       }
     }
-  let to_return = folders;
-  to_return
+  folders
+}
+
+fn load_icon() -> IconData {
+	let (icon_rgba, icon_width, icon_height) = {
+		let icon = include_bytes!("../assets/icon.png");
+		let image = image::load_from_memory(icon)
+			.expect("Failed to open icon path")
+			.into_rgba8();
+		let (width, height) = image.dimensions();
+		let rgba = image.into_raw();
+		(rgba, width, height)
+	};
+	
+	IconData {
+		rgba: icon_rgba,
+		width: icon_width,
+		height: icon_height,
+	}
 }
 
 fn main() -> eframe::Result {
@@ -182,7 +292,11 @@ fn main() -> eframe::Result {
 
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
   let options = eframe::NativeOptions {
-      viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 720.0]),
+      viewport: egui::ViewportBuilder {
+        inner_size : Some(Vec2::new(1280.0, 720.0)),
+        icon : Some(load_icon().into()),
+        ..Default::default()
+      },
       ..Default::default()
   };
   eframe::run_native(
