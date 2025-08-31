@@ -146,7 +146,7 @@ impl Opal {
 
             // TODO
             icon : String::new(),
-            tags : vec![],
+            tags : vec![String::from("Installed"), String::from("Ready to play")],
           };
 
           let sc = d.make_owned(i);
@@ -185,7 +185,7 @@ impl eframe::App for Opal {
                 self.log_printout.push_str(&format!("\nFailed to close Steam: {e}"));
               }
 
-              self.update_steam_shortcuts();
+              self.update_steam_shortcuts(); // TODO: Error handling
               
               if let Err(e) = start_steam() {
                 self.log_printout.push_str(&format!("\nFailed to start Steam: {e}"));
@@ -338,7 +338,7 @@ fn main() -> eframe::Result {
   env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
   let options = eframe::NativeOptions {
       viewport: egui::ViewportBuilder {
-        inner_size : Some(Vec2::new(640.0, 360.0)),
+        inner_size : Some(Vec2::new(1280.0, 720.0)),
         icon : Some(load_icon().into()),
         ..Default::default()
       },
