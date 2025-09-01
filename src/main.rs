@@ -1,10 +1,8 @@
 mod steam_start_stop;
 
 use serde::Deserialize;
-use std::fs;
-use std::fs::DirEntry;
+use std::{default, fs};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::collections::BTreeMap;
 use std::time::Duration;
 use eframe::egui::{self, ColorImage, IconData, Vec2};
@@ -13,7 +11,7 @@ use steam_shortcuts_util::{
   parse_shortcuts,
   shortcuts_to_bytes,
   shortcut::{Shortcut, ShortcutOwned},
-  app_id_generator::calculate_app_id_for_shortcut
+  app_id_generator::calculate_app_id_for_shortcut,
 };
 
 use steamlocate::SteamDir;
@@ -27,6 +25,8 @@ const MINECRAFT_FOLDER_NAME : &str = "minecraft"; // Used to check whether a giv
 const APP_INSTANCE_GRID_COLS : usize = 3;
 const APP_INSTANCE_GRID_MAX_HEIGHT : f32 = 200.0;
 
+const INSTANCES_JSON_PATH : &str = "\\instances\\instgroups.json";
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 #[derive(Default, Clone)]
@@ -36,10 +36,11 @@ struct Config {
   steam_shortcuts_path: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Instance {
   folder_name : String,
-  folder_path : String,
+  group : String,
+  icon_path : PathBuf,
   checked : bool,
 }
 
@@ -300,8 +301,8 @@ fn get_instances_from_path(path : &PathBuf) -> Vec<Instance> {
             if contains_minecraft_folder(&path) {
                 folders.push(Instance {
                 folder_name : name.to_string(),
-                folder_path : path.to_string_lossy().to_string(),
                 checked : false,
+                ..Default::default()
               });
             }
           }

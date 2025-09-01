@@ -43,7 +43,7 @@ pub fn ensure_steam_stopped(timeout : Duration) -> io::Result<()> {
                  {
             info!("Waiting for steam to stop. PID: {pid:?} Name: {process_name:?}");
             sleep(timeout);
-            process.kill_with(sysinfo::Signal::Quit);
+            process.kill_with(sysinfo::Signal::Term);
             process.kill_with(sysinfo::Signal::Kill);
         }
     }
