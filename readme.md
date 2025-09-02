@@ -4,9 +4,9 @@ This standalone application converts your PrismLauncher modded minecraft Instanc
 
 ## Features
 
-- Easy-to-use GUI to choose which instances to convert to entries in your Steam Library. (TODO)
-- Always up to date with the latest instances installed in your PrismLauncher installation. (TODO)
-- One-click solution to convert all of your favourite instances to Steam game shortcuts. (TODO)
+- Easy-to-use GUI to choose which instances to convert to entries in your Steam Library.
+- Always up to date with the latest instances installed in your PrismLauncher installation.
+- One-click solution to convert all of your favourite instances to Steam game shortcuts.
 
 ## About the Project
 
