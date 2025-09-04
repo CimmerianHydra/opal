@@ -14,6 +14,9 @@ use steam_shortcuts_util::{
 use std::path::{Path, PathBuf};
 use steamlocate::*;
 
+const DEFAULT_SHORTCUTS_PATH_PREAMBLE: &str = "userdata";
+const DEFAULT_SHORTCUTS_PATH: &str = "config\\shortcuts.vdf";
+
 // Wait until Steam has stopped
 pub fn ensure_steam_stopped(timeout : Duration) -> io::Result<()> {
     #[cfg(target_os = "windows")]
@@ -226,7 +229,10 @@ pub fn write_steam_shortcuts(path: &Path, desired_vec: Vec<DesiredShortcut>) -> 
         write(path, out)
     }
 
-pub fn default_steam_path() -> Result<PathBuf> {
-    let directory_as_ref = SteamDir::locate()?.path().to_owned();
-    return Ok(directory_as_ref)
+pub fn default_steam_shortcuts_path(id: u32) -> Result<PathBuf> {
+    let mut steam_directory = SteamDir::locate()?.path().to_owned();
+    steam_directory.push(DEFAULT_SHORTCUTS_PATH_PREAMBLE);
+    steam_directory.push(format!("{}", id));
+    steam_directory.push(DEFAULT_SHORTCUTS_PATH);
+    return Ok(steam_directory)
 }

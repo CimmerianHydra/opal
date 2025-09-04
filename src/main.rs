@@ -4,6 +4,7 @@ mod app;
 mod instances;
 mod export_page;
 mod settings_page;
+mod log_page;
 
 use app::*;
 use eframe::egui::*;
@@ -26,6 +27,7 @@ fn main() -> eframe::Result<()> {
     format!("{} {}", APP_NAME, env!("CARGO_PKG_VERSION")).as_str(),
     options,
     Box::new(|cc| {
-        Ok(Box::new(App::new(cc)))
+      egui_extras::install_image_loaders(&cc.egui_ctx);
+      Ok(Box::new(App::new(cc)))
     }))
 }

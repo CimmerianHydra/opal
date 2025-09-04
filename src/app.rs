@@ -1,6 +1,6 @@
 use eframe::{egui::{*}, Frame};
-use log::{debug, info};
-use crate::steam::{write_steam_shortcuts, DesiredShortcut};
+use log::{debug, info, error};
+use crate::{log_page::LogPage, steam::{write_steam_shortcuts, DesiredShortcut}};
 
 use super::ui::*;
 use super::instances::*;
@@ -9,7 +9,7 @@ use super::settings_page::*;
 
 pub const APP_NAME : &str = "Opal";
 
-const APP_SIDEBAR_WIDTH : f32 = 220.0;
+const APP_SIDEBAR_WIDTH : f32 = 128.0;
 const APP_LOGO_PADDING : f32 = 12.0;
 pub const APP_HEADER_PADDING : f32 = 20.0;
 
@@ -32,14 +32,15 @@ impl AppModel {
         match get_instances_from_path(instance_path, self.config.include_hidden) {
             Ok(i) => self.instances = i,
             Err(e) => {
-                self.log_printout
-                    .push_str(&format!("\nERROR: Couldn't Update unstances! {}", e))
+                let msg = format!("\nCouldn't update instances! {}", e);
+                error!("{}", &msg);
+                self.log_printout.push_str(&msg);
+                return;
             }
         }
     }
 
     pub fn update_steam_shortcuts(&mut self) {
-
 
         // Build desired shortcuts as owned and upsert by app_id.
         // We also re-number "order" later, so the `order` we put here is temporary.
@@ -68,10 +69,14 @@ impl AppModel {
             }
         }
 
-        if let Err(e) = write_steam_shortcuts(&self.config.steam_shortcuts_path, desired_shortcuts) {
-            self.log_printout.push_str(&format!("\nERROR: Couldn't update instances! {}", e));
-        } else {
-            return
+        match write_steam_shortcuts(&self.config.steam_shortcuts_path, desired_shortcuts) {
+            Ok(_) => return,
+            Err(e) => {
+                let msg = format!("\nCouldn't update shortcuts! {}", e);
+                error!("{}", &msg);
+                self.log_printout.push_str(&msg);
+                return;
+            }
         }
     }
 }
@@ -89,10 +94,11 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
 
-        // Register your tabs here. Adding tabs = push another `Box::new(MyPage { ... })`.
+        // Register your tabs here. Adding tabs = add another `Box::new(MyPage { ... })`.
         let pages: Vec<Box<dyn TabPage>> = vec![
             Box::new(ExportPage::default()),
             Box::new(SettingsPage::default()),
+            Box::new(LogPage::default()),
         ];
 
         let mut model = AppModel {

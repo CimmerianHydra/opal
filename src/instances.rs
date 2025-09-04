@@ -8,7 +8,7 @@ use directories::BaseDirs;
 pub struct Instance {
   pub folder_name : String,
   pub group : String,
-  pub icon_path : PathBuf,
+  pub icon_path : Option<PathBuf>,
   pub checked : bool,
 }
 impl Default for Instance {
@@ -16,7 +16,7 @@ impl Default for Instance {
         Self {
             folder_name : String::new(),
             group : String::new(),
-            icon_path : PathBuf::new(),
+            icon_path : None,
             checked : false
         }
     }
